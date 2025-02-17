@@ -1,3 +1,22 @@
+
+--[[
+	Sourced from NevermoreEngine: https://github.com/Quenty/NevermoreEngine/blob/bf9e3d66e5c31ec0dafcc1c9e4142d963d309c65/src/maid/src/Shared/Maid.lua
+	
+	Changelog
+
+	14/11/23
+	- Added Maid.Wrap
+
+	17/10/23
+	- Added types
+	- Added Maid.cleanTask for cleaning a single task
+		- Recursively cleans up tables of tasks (must have no metatable)
+		- Refactored DoCleaning and __newIndex to use cleanTask
+
+	24/10/23
+	- Fixed bug not cleaning up instances
+]]
+
 --[=[
 	Manages the cleaning of events and other things. Useful for
 	encapsulating state and make deconstructors easy.
@@ -20,10 +39,11 @@
 
 	@class Maid
 ]=]
--- luacheck: pop
-
 local Maid = {}
 Maid.ClassName = "Maid"
+
+export type Maid = typeof(setmetatable({}, Maid))
+export type Task = () -> () | thread | RBXScriptConnection | {Destroy: (self: any) -> ()} | {}
 
 --[=[
 	Constructs a new Maid object
@@ -51,8 +71,8 @@ end
 	@param value any
 	@return boolean
 ]=]
-function Maid.isMaid(value)
-	return type(value) == "table" and value.ClassName == "Maid"
+function Maid.isMaid(v)
+	return getmetatable(v) == Maid or getmetatable(v) and getmetatable(v).ClassName == Maid.ClassName
 end
 
 --[=[
@@ -99,49 +119,25 @@ end
 ]=]
 function Maid:__newindex(index, newTask)
 	if Maid[index] ~= nil then
-		error(string.format("Cannot use '%s' as a Maid key", tostring(index)), 2)
+		error(("Cannot use '%s' as a Maid key"):format(tostring(index)), 2)
 	end
 
 	local tasks = self._tasks
-	local job = tasks[index]
+	local oldTask = tasks[index]
 
-	if job == newTask then
+	if oldTask == newTask then
 		return
 	end
 
 	tasks[index] = newTask
 
-	if job then
-		local jobType = typeof(job)
-		if jobType == "function" then
-			job()
-		elseif jobType == "table" then
-			if type(job.Destroy) == "function" then
-				job:Destroy()
-			end
-		elseif jobType == "Instance" then
-			job:Destroy()
-		elseif jobType == "thread" then
-			local cancelled
-			if coroutine.running() ~= job then
-				cancelled = pcall(function()
-					task.cancel(job)
-				end)
-			end
-
-			if not cancelled then
-				task.defer(function()
-					task.cancel(job)
-				end)
-			end
-		elseif jobType == "RBXScriptConnection" then
-			job:Disconnect()
-		end
+	if oldTask then
+		Maid.cleanTask(oldTask)
 	end
 end
 
 --[=[
-	Gives a task to the maid for cleanup and returns the resulting value
+	Gives a task to the maid for cleanup and returnsthe resulting value
 
 	@param task MaidTask -- An item to clean
 	@return MaidTask
@@ -154,7 +150,7 @@ function Maid:Add(task)
 	self[#self._tasks+1] = task
 
 	if type(task) == "table" and (not task.Destroy) then
-		warn("[Maid.Add] - Gave table task without .Destroy\n\n" .. debug.traceback())
+		warn("[Maid.GiveTask] - Gave table task without .Destroy\n\n" .. debug.traceback())
 	end
 
 	return task
@@ -234,40 +230,103 @@ function Maid:DoCleaning()
 	local index, job = next(tasks)
 	while job ~= nil do
 		tasks[index] = nil
-		local jobType = typeof(job)
-		if jobType == "function" then
-			job()
-		elseif jobType == "table" and type(job.Destroy) == "function" then
-			job:Destroy()
-		elseif jobType == "Instance" then
-			job:Destroy()
-		elseif jobType == "thread" then
-			local cancelled
-			if coroutine.running() ~= job then
-				cancelled = pcall(function()
-					task.cancel(job)
-				end)
-			end
-
-			if not cancelled then
-				local toCancel = job
-				task.defer(function()
-					task.cancel(toCancel)
-				end)
-			end
-		elseif jobType == "RBXScriptConnection" then
-			job:Disconnect()
-		end
+		Maid.cleanTask(job)
 		index, job = next(tasks)
 	end
 end
 
 --[=[
-	Alias for [Maid.DoCleaning()](/api/Maid#DoCleaning)
+	Static class function that cleans up a single task given as argument.
+	Can be a function, thread, event connection, instance, maid,
+	a numeric-table of tasks or a table with a Destroy method.
+
+	The key "Destroy" in a table is always assumed to point to a function or nil.
+	An error will be thrown if there is a non-function stored - this is intentional.
+	Do not use this key for anything other than a cleanup method.
+
+	If the task is a table with a destroy method, that will be called, otherwise
+	if it also has no metatable and only numeric keys, it is treated as a list
+	of tasks, and all the values will be recursively cleaned as tasks, and the
+	table will be cleared if it's not frozen.
+
+	A table with any non-numeric keys, but no destroy method, will not be cleaned
+	(nor will its values be recursively cleaned). This allows class objects to be
+	cleaned only once by dropping their Destroy method after Destroy is called.
+]=]
+function Maid.cleanTask(job: Task, refs: {[any]:true}?)
+	if type(job) == "function" then
+		job()
+	elseif type(job) == "thread" then
+		local cancelled
+		if coroutine.running() ~= job then
+			cancelled = pcall(function()
+				task.cancel(job)
+			end)
+		end
+
+		if not cancelled then
+			local toCancel = job
+			task.defer(function()
+				task.cancel(toCancel)
+			end)
+		end
+	elseif typeof(job) == "RBXScriptConnection" then
+		job:Disconnect()
+	elseif typeof(job) == "Instance" then
+		job:Destroy()
+	elseif typeof(job) == "table" then
+		local taskTable = job :: any
+
+		if taskTable.Destroy then
+			taskTable:Destroy()
+		elseif getmetatable(taskTable) == nil then
+			for key in taskTable do
+				if typeof(key) ~= "number" then
+					warn("[Maid] Aborted cleaning non-numeric task table - might be an already destroyed object")
+					return
+				end
+			end
+			if refs then
+				if refs[job] then
+					return
+				end
+				refs[job] = true
+			else
+				refs = {[job]=true}
+			end
+			for k, v in taskTable do
+				Maid.cleanTask(v, refs)
+			end
+			if not table.isfrozen(job) then
+				table.clear(job)
+			end
+		end
+	end
+end
+
+--[=[
+	Alias for Maid.DoCleaning()
 
 	@function Destroy
 	@within Maid
 ]=]
 Maid.Destroy = Maid.DoCleaning
+
+--[[
+	Turns a Maid or MaidTask into a function that cleans it up.
+	Usage:
+	```lua
+		local maid = Maid.new()
+		local cleanup = maid:Wrap()
+		cleanup() --> maid is cleaned
+	```
+]]
+function Maid.Wrap(maidOrTask)
+	return function()
+		Maid.cleanTask(maidOrTask)
+	end
+end
+
+Maid.GetDestroy = Maid.Wrap
 
 return Maid
