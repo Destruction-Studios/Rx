@@ -144,7 +144,7 @@ end
 -- Observes from the first value the first child where the Name property equals
 -- *name*. Emits nothing while no child is found, or the first value is not an
 -- Instance.
-function export.findFirstChild(name: string)
+function export.findFirstChild(name: string, recursive: boolean?)
 	return Rx.pipe{
 		export.isTypeOf("Instance"),
 		Rx.switchMap(function(instance)
@@ -153,7 +153,7 @@ function export.findFirstChild(name: string)
 				local maid = Maid.new()
 				local current = UNSET
 				local function updateCurrent(child)
-					local next = instance:FindFirstChild(name)
+					local next = instance:FindFirstChild(name, recursive)
 					if next ~= current then
 						current = next
 						sub:Fire(current)
@@ -291,7 +291,7 @@ function export.findFirstChildOfClass(className: string)
 				local maid = Maid.new()
 				local current = UNSET
 				local function updateCurrent()
-					local next = instance:FindFirstChildOfClass(className)
+					local next = (instance :: Instance):FindFirstChildOfClass(className)
 					if next ~= current then
 						current = next
 						sub:Fire(current)
@@ -309,7 +309,7 @@ end
 -- Observes from the first value the first child where the ClassName property
 -- inherits from *className*. Emits nothing while no child is found, or the
 -- first value is not an Instance.
-function export.findFirstChildWhichIsA(className: string)
+function export.findFirstChildWhichIsA(className: string, recursive: boolean?)
 	return Rx.pipe{
 		export.isTypeOf("Instance"),
 		Rx.switchMap(function(instance)
@@ -318,7 +318,7 @@ function export.findFirstChildWhichIsA(className: string)
 				local maid = Maid.new()
 				local current = UNSET
 				local function updateCurrent()
-					local next = instance:FindFirstChildWhichIsA(className)
+					local next = (instance :: Instance):FindFirstChildWhichIsA(className, recursive)
 					if next ~= current then
 						current = next
 						sub:Fire(current)
